@@ -36,9 +36,11 @@ type
   TDataSetSerializeConfigImport = class
   private
     FImportOnlyFieldsVisible: Boolean;
+    FDecimalSeparator: Char;
   public
     constructor Create;
     property ImportOnlyFieldsVisible: Boolean read FImportOnlyFieldsVisible write FImportOnlyFieldsVisible;
+    property DecimalSeparator: Char read FDecimalSeparator write FDecimalSeparator;
   end;
 
   TDataSetSerializeConfig = class
@@ -46,6 +48,7 @@ type
     FCaseNameDefinition: TCaseNameDefinition;
     FDataSetPrefix: TArray<string>;
     FDateInputIsUTC: Boolean;
+    FDateIsFloatingPoint: Boolean;
     FExport: TDataSetSerializeConfigExport;
     FImport: TDataSetSerializeConfigImport;
     class var FInstance: TDataSetSerializeConfig;
@@ -57,6 +60,7 @@ type
     property DataSetPrefix: TArray<string> read FDataSetPrefix write FDataSetPrefix;
     property CaseNameDefinition: TCaseNameDefinition read FCaseNameDefinition write FCaseNameDefinition;
     property DateInputIsUTC: Boolean read FDateInputIsUTC write FDateInputIsUTC;
+    property DateIsFloatingPoint: Boolean read FDateIsFloatingPoint write FDateIsFloatingPoint;
     property &Export: TDataSetSerializeConfigExport read FExport write FExport;
     property Import: TDataSetSerializeConfigImport read FImport write FImport;
     class function GetInstance: TDataSetSerializeConfig;
@@ -97,6 +101,7 @@ begin
     FInstance.CaseNameDefinition := cndLowerCamelCase;
     FInstance.DataSetPrefix := ['mt', 'qry'];
     FInstance.DateInputIsUTC := True;
+    FInstance.DateIsFloatingPoint := False;
   end;
   Result := FInstance;
 end;
