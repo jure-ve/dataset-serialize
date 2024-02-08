@@ -8,7 +8,7 @@ interface
 
 uses
 {$IF DEFINED(FPC)}
-  DB, fpjson,
+  DB, fpjson, Generics.Collections,
 {$ELSE}
   System.JSON, Data.DB, System.StrUtils, System.SysUtils, System.Rtti,
   {$IF CompilerVersion >= 20}
@@ -197,7 +197,7 @@ implementation
 
 uses
 {$IF DEFINED(FPC)}
-  Classes, Variants, SysUtils, DateUtils, TypInfo, base64,
+  Classes, Variants, SysUtils, DateUtils, TypInfo, base64, FmtBCD,
 {$ELSE}
   System.Classes, System.NetEncoding, System.TypInfo, System.DateUtils, System.Generics.Collections,
   System.Variants, FireDAC.Comp.DataSet, FireDAC.Comp.Client,
@@ -212,18 +212,22 @@ var
   LJSONValue: {$IF DEFINED(FPC)}TJSONData{$ELSE}TJSONValue{$ENDIF};
   {$IF DEFINED(FPC)}
   I: Integer;
+  LBookMark: TBookmark;
   {$ELSE}
-  LNestedDataSet: TDataSet;
-  LBooleanValue: Boolean;
-  LDataSetDetails: TList<TDataSet>;
   LMasterSource: TDataSource;
+  LBooleanValue: Boolean;
   {$ENDIF}
+  LNestedDataSet: TDataSet;
+  LDataSetDetails: TList<TDataSet>;
   LObjectState: string;
   LFormatSettings: TFormatSettings;
   LKeyValues: TKeyValues;
   LTryStrToDateTime: TDateTime;
   LTryStrToCurr: Currency;
   LTryStrToFloat: Double;
+  LHex: Integer;
+  LByteValue: Byte;
+  LBytes: TBytes;
 begin
   if (not Assigned(AJSONObject)) or (not Assigned(ADataSet)) or (AJSONObject.Count = 0) then
     Exit;
@@ -334,11 +338,21 @@ begin
           LField.Clear;
           Continue;
         end;
+        if LJSONValue.Value = EmptyStr then
+        begin
+          LField.Clear;
+          Continue;
+        end;
+        if Assigned(LField.OnSetText) then
+        begin
+          LField.Text := LJSONValue.Value;
+          Continue;
+        end;
         case LField.DataType of
           TFieldType.ftBoolean:
             begin
               {$IF DEFINED(FPC)}
-              LField.AsBoolean := LJSONValue.AsBoolean;
+              LField.AsBoolean := (LJSONValue.AsString<>'') and LJSONValue.AsBoolean;
               {$ELSE}
               if LJSONValue.TryGetValue<Boolean>(LBooleanValue) then
                 LField.AsBoolean := LBooleanValue;
@@ -376,10 +390,18 @@ begin
                     LTryStrToFloat := StrToFloat(LJSONValue.Value, LFormatSettings);
                   end;
               end;
-              LField.AsFloat := LTryStrToFloat;
+              if (LField.DataType = TFieldType.ftFMTBcd) then
+                LField.AsBCD := {$IF DEFINED(FPC)}DoubleToBCD(LTryStrToFloat){$ELSE}LTryStrToFloat{$ENDIF}
+              else
+                LField.AsFloat := LTryStrToFloat;
             end;
           TFieldType.ftString, TFieldType.ftWideString, TFieldType.ftMemo, TFieldType.ftWideMemo, TFieldType.ftGuid, TFieldType.ftFixedChar, TFieldType.ftFixedWideChar:
-            LField.AsString := LJSONValue.Value;
+          begin
+            if LJSONValue is TJSONObject then
+              LField.Text := {$IF DEFINED(FPC)}LJSONValue.AsJSON{$ELSE}LJSONValue.ToJSON{$ENDIF}
+            else
+              LField.AsString := LJSONValue.Value;
+          end;
           TFieldType.ftDate:
             begin
               if LJsonValue.InheritsFrom(TJSONNumber) then
@@ -392,8 +414,10 @@ begin
             begin
               if LJSONValue.InheritsFrom(TJSONNumber) then
                 LTryStrToDateTime := StrToFloatDef(LJSONValue.Value, 0)
-              else if not TryStrToDateTime(VarToStr(LJSONValue.Value), LTryStrToDateTime) then
-                LTryStrToDateTime := ISO8601ToDate(LJSONValue.Value, TDataSetSerializeConfig.GetInstance.DateInputIsUTC);
+              else if TDataSetSerializeConfig.GetInstance.DateTimeIsISO8601 then
+                LTryStrToDateTime := ISO8601ToDate(LJSONValue.Value, TDataSetSerializeConfig.GetInstance.DateInputIsUTC)
+              else
+                TryStrToDateTime(VarToStr(LJSONValue.Value), LTryStrToDateTime);
               LField.AsDateTime := LTryStrToDateTime;
             end;
           TFieldType.ftTime:
@@ -422,8 +446,30 @@ begin
               end;
             end;
           {$ENDIF}
-          TFieldType.ftGraphic, TFieldType.ftBlob, TFieldType.ftOraBlob{$IF NOT DEFINED(FPC)}, TFieldType.ftStream{$ENDIF}:
-            LoadBlobFieldFromStream(LField, LJSONValue);
+          TFieldType.ftGraphic, TFieldType.ftBlob, TFieldType.ftOraBlob, TFieldType.ftOraClob{$IF NOT DEFINED(FPC)}, TFieldType.ftStream{$ENDIF}:
+            begin
+              if TDataSetSerializeConfig.GetInstance.Import.DecodeBase64BlobField then
+                LoadBlobFieldFromStream(LField, LJSONValue)
+              else
+              begin
+                if LJSONValue is TJSONObject then
+                  LField.Text := {$IF DEFINED(FPC)}LJSONValue.AsJSON{$ELSE}LJSONValue.ToJSON{$ENDIF}
+                else
+                  LField.AsString := LJSONValue.Value;
+              end;
+            end;
+          TFieldType.ftVarBytes, TFieldType.ftBytes:
+            begin
+              SetLength(LBytes, Length(LJSONValue.Value) div 2);
+              LHex := 1;
+              while LHex <= Length(LJSONValue.Value) do
+              begin
+                LByteValue := StrToInt('$' + Copy(LJSONValue.Value, LHex, 2));
+                LBytes[(LHex + 1) div 2 - 1] := LByteValue;
+                Inc(LHex, 2);
+              end;
+              LField.AsBytes := LBytes;
+            end
           else
             raise EDataSetSerializeException.CreateFmt(FIELD_TYPE_NOT_FOUND, [LField.FieldName]);
         end;
@@ -436,14 +482,25 @@ begin
       TFDDataSet(ADataSet).MasterSource := LMasterSource;
     {$ENDIF}
   end;
-  {$IF NOT DEFINED(FPC)}
   LDataSetDetails := TList<TDataSet>.Create;
   try
-    ADataSet.GetDetailDataSets(LDataSetDetails);
+    TDataSetSerializeUtils.GetDetailsDatasets(ADataSet, LDataSetDetails);
     for LNestedDataSet in LDataSetDetails do
     begin
+      {$IF DEFINED(FPC)}
+      LBookMark := ADataSet.BookMark;
+      try
+        ADataSet.Refresh;
+        if ADataSet.BookmarkValid(LBookMark) then
+          ADataSet.GotoBookmark(LBookMark);
+      finally
+        ADataSet.FreeBookmark(LBookMark);
+      end;
+      LJSONValue := AJSONObject.Find(TDataSetSerializeUtils.FormatDataSetName(LNestedDataSet.Name));
+      {$ELSE}
       if not AJSONObject.TryGetValue(TDataSetSerializeUtils.FormatDataSetName(LNestedDataSet.Name), LJSONValue) then
         Continue;
+      {$ENDIF}
       if LJSONValue is TJSONNull then
         Continue;
       if TUpdateStatus.usUnmodified.ToString = LObjectState then
@@ -457,7 +514,6 @@ begin
   finally
     LDataSetDetails.Free;
   end;
-  {$ENDIF}
 end;
 
 function TJSONSerialize.JSONPairToFieldName(const AValue: string): string;
@@ -477,7 +533,7 @@ begin
     for I := 0 to Pred(Length(Result)) do
     {$ELSE}
     for I := 1 to Length(Result) do
-    {$IFEND}
+    {$ENDIF}
     begin
       {$IF DEFINED(FPC) or (CompilerVersion < 20)}
       if CharInSet(Result[I], ['A'..'Z']) and CharInSet(Result[Pred(I)], ['a'..'z']) then
@@ -565,11 +621,15 @@ var
   LMemoryStream: TMemoryStream;
   {$ENDIF}
 begin
+  {$IF DEFINED(FPC)}
+  LStringStream := TStringStream.Create(DecodeStringBase64((AJSONValue as TJSONString).Value));
+  {$ELSE}
   LStringStream := TStringStream.Create((AJSONValue as TJSONString).Value);
+  {$ENDIF}
   try
     LStringStream.Position := 0;
     {$IF DEFINED(FPC)}
-    TBlobField(AField).AsString := DecodeStringBase64(LStringStream.DataString);
+    TBlobField(AField).LoadFromStream(LStringStream);
     {$ELSE}
     LMemoryStream := TMemoryStream.Create;
     try
@@ -586,12 +646,15 @@ begin
 end;
 
 procedure TJSONSerialize.LoadFieldsFromJSON(const ADataSet: TDataSet; const AJSONObject: TJSONObject);
+const
+  MAX_SIZE_STRING = 4096;
 var
   {$IF DEFINED(FPC)}
   I: Integer;
   {$ELSE}
   LJSONPair: TJSONPair;
   {$ENDIF}
+  LFieldDef: TFieldDef;
 begin
   {$IF DEFINED(FPC)}
   for I := 0 to Pred(AJSONObject.Count) do
@@ -599,30 +662,33 @@ begin
   for LJSONPair in AJSONObject do
   {$ENDIF}
   begin
-    with ADataSet.FieldDefs.AddFieldDef do
+    LFieldDef := ADataSet.FieldDefs.AddFieldDef;
+    LFieldDef.Name := JSONPairToFieldName({$IF DEFINED(FPC)}AJSONObject.Names[I]{$ELSE}LJSONPair.JsonString.Value{$ENDIF});
+    LFieldDef.DataType := TDataSetSerializeUtils.GetDataType({$IF DEFINED(FPC)}AJSONObject.Items[I]{$ELSE}LJSONPair.JsonValue{$ENDIF});
+    LFieldDef.Size := 0;
+    if LFieldDef.DataType = ftString then
     begin
-      Name := JSONPairToFieldName({$IF DEFINED(FPC)}AJSONObject.Names[I]{$ELSE}LJSONPair.JsonString.Value{$ENDIF});
-      DataType := TDataSetSerializeUtils.GetDataType({$IF DEFINED(FPC)}AJSONObject.Items[I]{$ELSE}LJSONPair.JsonValue{$ENDIF});
-      if DataType = ftString then
+      if {$IF DEFINED(FPC)}AJSONObject.Items[I].IsNull{$ELSE}LJSONPair.Null{$ENDIF} then
+        LFieldDef.Size := MAX_SIZE_STRING
+      else if Length({$IF DEFINED(FPC)}AJSONObject.Items[I].AsString{$ELSE}LJSONPair.JsonValue.Value{$ENDIF}) > MAX_SIZE_STRING then
       begin
-        if Length({$IF DEFINED(FPC)}AJSONObject.Items[I].AsString{$ELSE}LJSONPair.JsonValue.Value{$ENDIF}) > 4096 then
-        begin
-          DataType := ftBlob;
-          Size := Length({$IF DEFINED(FPC)}AJSONObject.Items[I].AsString{$ELSE}LJSONPair.JsonValue.Value{$ENDIF});
-        end
-        else
-          Size := 4096;
-      end;
+        LFieldDef.DataType := ftBlob;
+        LFieldDef.Size := Length({$IF DEFINED(FPC)}AJSONObject.Items[I].AsString{$ELSE}LJSONPair.JsonValue.Value{$ENDIF});
+      end
+      else
+        LFieldDef.Size := MAX_SIZE_STRING;
     end;
   end;
 end;
 
 function TJSONSerialize.LoadFieldStructure(const AJSONValue: {$IF DEFINED(FPC)}TJSONData{$ELSE}TJSONValue{$ENDIF}): TFieldStructure;
-{$IF NOT DEFINED(FPC)}
 var
   LStrTemp: string;
   LIntTemp: Integer;
   LBoolTemp: Boolean;
+{$IF DEFINED(FPC)}
+  LJSONObject : TJSONObject;
+  LJSONNumber: TJSONNumber;
 {$ENDIF}
 begin
 {$IF NOT DEFINED(FPC)}
@@ -662,6 +728,51 @@ begin
 
   if AJSONValue.TryGetValue<string>(FIELD_PROPERTY_AUTO_GENERATE_VALUE, LStrTemp) then
     Result.AutoGenerateValue := TAutoRefreshFlag(GetEnumValue(TypeInfo(TAutoRefreshFlag), LStrTemp));
+
+  if AJSONValue.TryGetValue<Integer>(FIELD_PROPERTY_PRECISION, LIntTemp) then
+    Result.Precision := LIntTemp;
+  {$ELSE}
+  LJSONObject := AJSONValue as TJSONObject;
+  try
+    LStrTemp := LJSONObject.Strings['dataType'];
+    Result.FieldType := TFieldType(GetEnumValue(TypeInfo(TFieldType), LStrTemp));
+  except
+    raise EDataSetSerializeException.CreateFmt('Attribute %s not found in json!', [FIELD_PROPERTY_DATA_TYPE]);
+  end;
+
+  LStrTemp := LJSONObject.Strings['alignment'];
+  Result.Alignment := TAlignment(GetEnumValue(TypeInfo(TAlignment), LStrTemp));
+
+  try
+    LStrTemp := LJSONObject.Strings['fieldName'];
+    Result.FieldName := LStrTemp;
+  except
+    raise EDataSetSerializeException.CreateFmt('Attribute %s not found in json!', [FIELD_PROPERTY_FIELD_NAME]);
+  end;
+
+  LIntTemp := LJSONObject.Integers['size'];
+  Result.Size := LIntTemp;
+
+  LStrTemp := LJSONObject.Strings['origin'];
+  Result.Origin := LStrTemp;
+
+  LStrTemp := LJSONObject.Strings['displayLabel'];
+  Result.DisplayLabel := LStrTemp;
+
+  LBoolTemp := LJSONObject.Booleans['key'];
+  Result.Key := LBoolTemp;
+
+  LBoolTemp := LJSONObject.Booleans['required'];
+  Result.Required := LBoolTemp;
+
+  LBoolTemp := LJSONObject.Booleans['visible'];
+  Result.Visible := LBoolTemp;
+
+  LBoolTemp := LJSONObject.Booleans['readOnly'];
+  Result.ReadOnly := LBoolTemp;
+
+  if LJSONObject.Find('precision', LJSONNumber) then
+    Result.Precision := LJSONNumber.AsInteger;
 {$ENDIF}
 end;
 
