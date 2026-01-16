@@ -2,6 +2,7 @@ unit DataSet.Serialize.Config;
 
 {$IF DEFINED(FPC)}
   {$MODE DELPHI}{$H+}
+  {$codePage utf8}
 {$ENDIF}
 
 interface
@@ -80,8 +81,6 @@ type
     FExport: TDataSetSerializeConfigExport;
     FImport: TDataSetSerializeConfigImport;
     class var FInstance: TDataSetSerializeConfig;
-  protected
-    class function GetDefaultInstance: TDataSetSerializeConfig;
   public
     constructor Create;
     destructor Destroy; override;
@@ -123,7 +122,7 @@ begin
   inherited;
 end;
 
-class function TDataSetSerializeConfig.GetDefaultInstance: TDataSetSerializeConfig;
+class function TDataSetSerializeConfig.GetInstance: TDataSetSerializeConfig;
 begin
   if not Assigned(FInstance) then
   begin
@@ -136,11 +135,6 @@ begin
     FInstance.DateTimeIsISO8601 := True;
   end;
   Result := FInstance;
-end;
-
-class function TDataSetSerializeConfig.GetInstance: TDataSetSerializeConfig;
-begin
-  Result := TDataSetSerializeConfig.GetDefaultInstance;
 end;
 
 class procedure TDataSetSerializeConfig.UnInitialize;
