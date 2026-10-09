@@ -322,8 +322,15 @@ begin
     case LField.DataType of
       TFieldType.ftBoolean:
         Result.{$IF DEFINED(FPC)}Add{$ELSE}AddPair{$ENDIF}(LKey, TDataSetSerializeUtils.BooleanToJSON(LField.AsBoolean));
-      TFieldType.ftInteger, TFieldType.ftSmallint, TFieldType.ftAutoInc{$IF NOT DEFINED(FPC)}, TFieldType.ftShortint, TFieldType.ftLongWord, TFieldType.ftWord, TFieldType.ftByte{$ENDIF}:
+      TFieldType.ftInteger, TFieldType.ftSmallint, TFieldType.ftAutoInc{$IF NOT DEFINED(FPC)}, TFieldType.ftShortint, TFieldType.ftWord, TFieldType.ftByte{$ENDIF}:
         Result.{$IF DEFINED(FPC)}Add{$ELSE}AddPair{$ENDIF}(LKey, {$IF DEFINED(FPC)}LField.AsInteger{$ELSE}TJSONNumber.Create(LField.AsInteger){$ENDIF});
+      {$IF NOT DEFINED(FPC)}
+      TFieldType.ftLongWord:
+        // Cardinal holds up to 4294967295, but TLongWordField.GetAsInteger raises
+        // RangeError(Value, 0, High(Integer)) above 2147483647. Widen to Int64,
+        // which represents the whole unsigned 32-bit range exactly.
+        Result.AddPair(LKey, TJSONNumber.Create(LField.AsLargeInt));
+      {$ENDIF}
       TFieldType.ftLargeint:
         begin
           if FConfig.Export.ExportLargeIntAsString then
